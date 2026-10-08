@@ -6,13 +6,29 @@ export const openaiCatalogSchema = z.object({models: z.array(z.object({
 }).passthrough()).min(1)}).passthrough();
 export type OpenAICatalog = z.infer<typeof openaiCatalogSchema>;
 
-export interface ClaudeModel { id: string; sdkModel: string; displayName: string; description: string; efforts: string[] }
+export interface ClaudeModel { id: string; sdkModel: string; displayName: string; description: string; efforts: string[]; hidden?: boolean }
+function versionedDisplayName(model: ModelInfo): string {
+  const version = model.description.match(/^(Opus|Sonnet|Haiku|Fable)\s+\d+(?:\.\d+)*/)?.[0];
+  if (!version) return model.displayName;
+  return model.displayName.replace(/^(Opus|Sonnet|Haiku|Fable)(?:\s+\d+(?:\.\d+)*)?/, version);
+}
 export function discoverCatalog(models: ModelInfo[]): ClaudeModel[] {
-  return models.filter(m => m.value !== 'default').map(m => ({
+  const discovered: ClaudeModel[] = models.filter(m => m.value !== 'default').map(m => ({
     id: `claude-sdk-${m.value.replaceAll(/[^a-zA-Z0-9-]/g, '-').replaceAll(/-+$/g, '')}`,
-    sdkModel: m.value, displayName: `Claude Agent · ${m.displayName}`,
+    sdkModel: m.value, displayName: `Claude Agent · ${versionedDisplayName(m)}`,
     description: m.description, efforts: m.supportedEffortLevels ?? [],
   }));
+  // Keep saved Codex chats working when the SDK renames its native-1M aliases.
+  // These compatibility entries remain selectable by ID without duplicate picker rows.
+  const opus = discovered.find(m => m.sdkModel === 'opus');
+  if (opus && !discovered.some(m => m.id === 'claude-sdk-opus-1m')) {
+    discovered.push({...opus, id: 'claude-sdk-opus-1m', hidden: true});
+  }
+  const fable = discovered.find(m => m.sdkModel === 'fable' && /\bFable 5\.1\b/.test(`${m.displayName} ${m.description}`));
+  if (fable && !discovered.some(m => m.id === 'claude-sdk-claude-fable-5-1-1m')) {
+    discovered.push({...fable, id: 'claude-sdk-claude-fable-5-1-1m', sdkModel: 'claude-fable-5-1', hidden: true});
+  }
+  return discovered;
 }
 export function combinedCatalog(openai: OpenAICatalog, claude: ClaudeModel[]) {
   const original = openai.models.filter(m => !m.slug.startsWith('claude-sdk-'));
@@ -32,7 +48,7 @@ export function codexCatalog(models: ClaudeModel[]) {
     slug: m.id, display_name: m.displayName, description: `${m.description} · Claude Agent SDK`,
     default_reasoning_level: m.efforts.includes('medium') ? 'medium' : 'none',
     supported_reasoning_levels: (m.efforts.length ? m.efforts : ['none']).map(effort => ({effort, description: `${effort} effort`})),
-    shell_type: 'unified_exec', visibility: 'list', supported_in_api: true, priority: i,
+    shell_type: 'unified_exec', visibility: m.hidden ? 'hide' : 'list', supported_in_api: true, priority: i,
     base_instructions: 'You are a coding assistant in Codex. Follow the user and developer instructions. Use the provided Codex tools to inspect, edit and verify work. Never claim an action happened without its tool result.',
     availability_nux: null, upgrade: null, support_verbosity: false, default_verbosity: null,
     apply_patch_tool_type: 'freeform', truncation_policy: {mode: 'bytes', limit: 20000},
